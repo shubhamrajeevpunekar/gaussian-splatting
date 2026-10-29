@@ -1,4 +1,45 @@
 # 3D Gaussian Splatting for Real-Time Radiance Field Rendering
+
+## Local changes in this checkout (uncommitted)
+
+This checkout is used by the NADIR experiments (`~/Repos/nadir/dataset_experiments/`). It is upstream
+`graphdeco-inria/gaussian-splatting` at `54c035f` plus the changes below, all uncommitted (`git diff` lists them).
+Everything not listed here is upstream code.
+
+| # | Change | Files | Active when | Effect on results |
+|---|---|---|---|---|
+| 1 | `--llffhold N`: with `--eval`, every N-th photo (sorted by name) is held out for testing | [arguments/\_\_init\_\_.py](arguments/__init__.py), [scene/\_\_init\_\_.py](scene/__init__.py) | only when passed | none at the default (8, the upstream value) |
+| 2 | Photos and masks stored as uint8, read back as float | [scene/cameras.py](scene/cameras.py) (`_u8_property`) | always | none: bit-identical values, 4x less RAM |
+| 3 | Depth loss only on pixels that are unmasked and have prior depth, averaged over those pixels | [scene/cameras.py](scene/cameras.py), [train.py](train.py) | only with `-d` (depth maps) | depth-supervised runs only |
+| 4 | Build fixes and the rasterizer branch (see below) | submodules | build | none on the loss |
+
+1. **`--llffhold N`** (added 2026-10-23). Upstream hard-codes every 8th photo. The NADIR Horizon-GS baselines use
+   `--eval --llffhold 32`, which holds out exactly Horizon-GS's test photos. Models whose `cfg_args` predate the option
+   still load (`getattr(args, "llffhold", 8)`).
+2. **uint8 photo storage** (added 2026-10-23). `Camera.original_image` and `Camera.alpha_mask` are class properties
+   that store uint8 and return `t.float() / 255`. That is the exact value PILtoTorch computes from an 8-bit image
+   (checked with `torch.equal`), so training is unchanged. Upstream keeps float32 copies: with `--data_device cpu`,
+   2,518 photos at 1600x1066 with masks reached 99 GB of RAM and were killed by the kernel. With uint8 the same load
+   peaks at 24 GB. The `train_test_exp` half-mask edit is now done on a local tensor before storing, because the
+   property returns a copy.
+3. **Masked depth loss** (added 2026-10-21). `depth_mask = alpha x (inverse depth > 0)` (upstream: all ones), and the
+   depth L1 is `sum / number of valid pixels` (upstream: mean over all pixels, diluted by masked ones). Masked pixels
+   (sky, vehicles, people) and pixels without prior depth give no depth gradient.
+4. **Submodules.** `submodules/diff-gaussian-rasterization` is checked out at `26ce026` ("antialiasing toggling",
+   branch `3dgs_accel`: sparse Adam with separate SH) instead of the recorded `9c5c202`, plus `#include <cstdint>` in
+   `cuda_rasterizer/rasterizer_impl.h` (newer GCC). `SIBR_viewers` is ported to Embree 4 and newer FFmpeg APIs
+   (`cmake/linux/dependencies.cmake`, `Raycaster`, `FFmpegVideoEncoder`, `VideoUtils`). `fused-ssim` and
+   `simple-knn` only carry build products.
+
+NADIR runs and the changes they train with:
+
+| Experiment | Changes used |
+|---|---|
+| [horizongs/road](../nadir/dataset_experiments/horizongs/road/README.md): 3DGS baseline on the Horizon-GS `road` scene (from 2026-10-24) | 1 (`--llffhold 32`), 2, and the alpha masks of its RGBA photos (upstream feature) |
+| [horizongs/road](../nadir/dataset_experiments/horizongs/road/README.md) `3dgs_depth_100k`: the same + Horizon-GS's monocular depth (`-d depths`) | 1, 2, 3 |
+| [agi2p/ca0248_all_3dgs_colmap_poses_masked_pi3xdepth](../nadir/dataset_experiments/agi2p/ca0248_all_3dgs_colmap_poses_masked_pi3xdepth) (Pi3X depth arm) | 3 |
+| Other masked 3DGS runs (AGI2P `ca0248_all_3dgs_colmap_poses_masked*`, TUM2TWIN campus) | none of 1-3 changes them: no depth and the default split; they predate 2, which changes no values |
+
 Bernhard Kerbl*, Georgios Kopanas*, Thomas Leimkühler, George Drettakis (* indicates equal contribution)<br>
 | [Webpage](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) | [Full Paper](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_high.pdf) | [Video](https://youtu.be/T_kXY43VZnk) | [Other GRAPHDECO Publications](http://www-sop.inria.fr/reves/publis/gdindex.php) | [FUNGRAPH project page](https://fungraph.inria.fr) |<br>
 | [T&T+DB COLMAP (650MB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip) | [Pre-trained Models (14 GB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip) | [Viewers for Windows (60MB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/binaries/viewers.zip) | [Evaluation Images (7 GB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/evaluation/images.zip) |<br>

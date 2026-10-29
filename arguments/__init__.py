@@ -56,6 +56,7 @@ class ModelParams(ParamGroup):
         self.train_test_exp = False
         self.data_device = "cuda"
         self.eval = False
+        self.llffhold = 8                    # with --eval: every llffhold-th photo (sorted by name) is held out
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

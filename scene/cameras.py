@@ -16,7 +16,22 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from utils.general_utils import PILtoTorch
 import cv2
 
+def _u8_property(name):
+    """A photo/mask tensor stored as uint8 and read back as float. Lossless: PILtoTorch makes them as k / 255 from 8-bit
+    images, and k / 255 is recomputed exactly on read. 4x less memory with --data_device cpu (e.g. 2,518 photos at
+    1600x1066 with masks: ~70 GB as float32, ~17 GB as uint8)."""
+    key = "_u8_" + name
+    def get(self):
+        t = self.__dict__.get(key)
+        return None if t is None else t.float() / 255.0
+    def put(self, v):
+        object.__setattr__(self, key, None if v is None else (v * 255.0).round().to(torch.uint8))
+    return property(get, put)
+
 class Camera(nn.Module):
+    original_image = _u8_property("original_image")
+    alpha_mask = _u8_property("alpha_mask")
+
     def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, depth_params, image, invdepthmap,
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
@@ -41,17 +56,17 @@ class Camera(nn.Module):
 
         resized_image_rgb = PILtoTorch(image, resolution)
         gt_image = resized_image_rgb[:3, ...]
-        self.alpha_mask = None
         if resized_image_rgb.shape[0] == 4:
-            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
+            alpha_mask = resized_image_rgb[3:4, ...].clone()
         else: 
-            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
+            alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...])
 
-        if train_test_exp and is_test_view:
+        if train_test_exp and is_test_view:     # edited before storing: the stored mask is read back as a copy
             if is_test_dataset:
-                self.alpha_mask[..., :self.alpha_mask.shape[-1] // 2] = 0
+                alpha_mask[..., :alpha_mask.shape[-1] // 2] = 0
             else:
-                self.alpha_mask[..., self.alpha_mask.shape[-1] // 2:] = 0
+                alpha_mask[..., alpha_mask.shape[-1] // 2:] = 0
+        self.alpha_mask = alpha_mask.to(self.data_device)
 
         self.original_image = gt_image.clamp(0.0, 1.0).to(self.data_device)
         self.image_width = self.original_image.shape[2]
@@ -60,9 +75,10 @@ class Camera(nn.Module):
         self.invdepthmap = None
         self.depth_reliable = False
         if invdepthmap is not None:
-            self.depth_mask = torch.ones_like(self.alpha_mask)
             self.invdepthmap = cv2.resize(invdepthmap, resolution)
             self.invdepthmap[self.invdepthmap < 0] = 0
+            # no depth gradient where the photo is masked (alpha 0) or the prior has no depth (0)
+            self.depth_mask = self.alpha_mask * torch.from_numpy((self.invdepthmap > 0)[None]).to(self.alpha_mask)
             self.depth_reliable = True
 
             if depth_params is not None:
